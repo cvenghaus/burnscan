@@ -47,10 +47,6 @@ ID_BUTTON_7 = 2117
 ID_BUTTON_8 = 2118
 ID_BUTTON_9 = 2119
 ID_BUTTON_DEL = 2121
-ID_BUTTON_LOOKUP = 2210
-ID_BUTTON_BUY = 2211
-ID_BUTTON_SCHEDULES = 2212
-ID_BUTTON_NEWGREETER = 2213
 ID_BUTTON_SEARCHGO = 2310
 ID_BUTTON_CODEGO = 2311
 
@@ -88,7 +84,11 @@ class MainWindow(wx.Frame):
         if self.args.cryptconfig:
             self.crypt_config()
 
-        self.doc = xml.dom.minidom.parse(self.config.get(CFG_SECTION_GENERAL, CFG_DATABASE_PATH))
+        try:
+            self.doc = xml.dom.minidom.parse(self.config.get(CFG_SECTION_GENERAL, CFG_DATABASE_PATH))
+        except IOError as err:
+            print("Error loading database: {0}".format(err))
+            sys.exit()
 
         # create the menus
         fileMenu = wx.Menu()
@@ -134,10 +134,6 @@ class MainWindow(wx.Frame):
         self.button_8 = wx.Button(self, ID_BUTTON_8, "&8")
         self.button_9 = wx.Button(self, ID_BUTTON_9, "&9")
         self.button_del = wx.Button(self, ID_BUTTON_DEL, "&del")
-        self.button_lookup = wx.Button(self, ID_BUTTON_LOOKUP, "&Look Up")
-        self.button_buy = wx.Button(self, ID_BUTTON_BUY, "&Buy Tickets")
-        self.button_schedules = wx.Button(self, ID_BUTTON_SCHEDULES, "&Schedules")
-        self.button_newgreeter = wx.Button(self, ID_BUTTON_NEWGREETER, "New &Greeter")
 
         # populate the data
         #self.list_people()
@@ -171,12 +167,6 @@ class MainWindow(wx.Frame):
         self.sizer_panel.Add(self.sizer_panel_stats, 1, wx.EXPAND)
         self.sizer_panel.Add(self.sizer_panel_search, 7, wx.EXPAND)
 
-        self.sizer_functions = wx.BoxSizer(wx.VERTICAL)
-        self.sizer_functions.Add(self.button_lookup, 1, wx.EXPAND)
-        self.sizer_functions.Add(self.button_buy, 1, wx.EXPAND)
-        self.sizer_functions.Add(self.button_schedules, 1, wx.EXPAND)
-        self.sizer_functions.Add(self.button_newgreeter, 1, wx.EXPAND)
-
         self.sizer_keypad = wx.BoxSizer(wx.VERTICAL)
         self.sizer_keypad_row1 = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_keypad_row2 = wx.BoxSizer(wx.HORIZONTAL)
@@ -200,7 +190,6 @@ class MainWindow(wx.Frame):
 
         self.sizer_controls.Add(self.sizer_panel, 1, wx.EXPAND)
         self.sizer_controls.Add(self.sizer_keypad, 1, wx.EXPAND)
-        #self.sizer_controls.Add(self.sizer_functions, 1, wx.EXPAND)
 
         self.sizer_code = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_code.Add(self.textctrl_code, 1, wx.EXPAND)
@@ -218,22 +207,22 @@ class MainWindow(wx.Frame):
         # attach events
         self.Bind(wx.EVT_MENU, self.on_about, id=ID_ABOUT)
         self.Bind(wx.EVT_MENU, self.on_exit, id=ID_EXIT)
-        self.Bind(wx.EVT_BUTTON, self.on_button_0, id=ID_BUTTON_0)
-        self.Bind(wx.EVT_BUTTON, self.on_button_1, id=ID_BUTTON_1)
-        self.Bind(wx.EVT_BUTTON, self.on_button_2, id=ID_BUTTON_2)
-        self.Bind(wx.EVT_BUTTON, self.on_button_3, id=ID_BUTTON_3)
-        self.Bind(wx.EVT_BUTTON, self.on_button_4, id=ID_BUTTON_4)
-        self.Bind(wx.EVT_BUTTON, self.on_button_5, id=ID_BUTTON_5)
-        self.Bind(wx.EVT_BUTTON, self.on_button_6, id=ID_BUTTON_6)
-        self.Bind(wx.EVT_BUTTON, self.on_button_7, id=ID_BUTTON_7)
-        self.Bind(wx.EVT_BUTTON, self.on_button_8, id=ID_BUTTON_8)
-        self.Bind(wx.EVT_BUTTON, self.on_button_9, id=ID_BUTTON_9)
-        self.Bind(wx.EVT_BUTTON, self.on_button_del, id=ID_BUTTON_DEL)
-        self.Bind(wx.EVT_BUTTON, self.on_button_code_go, id=ID_BUTTON_CODEGO)
-        self.Bind(wx.EVT_BUTTON, self.on_button_search_go, id=ID_BUTTON_SEARCHGO)
-        self.Bind(wx.EVT_LEFT_DCLICK, self.on_left_dclick_search_results, id=ID_LISTBOX_SEARCHRESULTS)
-        self.Bind(wx.EVT_KEY_UP, self.on_key_up_search_filter, id=ID_TEXTCTRL_SEARCHFILTER)
-        self.Bind(wx.EVT_KEY_UP, self.on_key_up_code, id=ID_TEXTCTRL_CODE)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=0: self.on_button_num(e, n), self.button_0)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=1: self.on_button_num(e, n), self.button_1)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=2: self.on_button_num(e, n), self.button_2)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=3: self.on_button_num(e, n), self.button_3)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=4: self.on_button_num(e, n), self.button_4)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=5: self.on_button_num(e, n), self.button_5)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=6: self.on_button_num(e, n), self.button_6)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=7: self.on_button_num(e, n), self.button_7)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=8: self.on_button_num(e, n), self.button_8)
+        self.Bind(wx.EVT_BUTTON, lambda e, n=9: self.on_button_num(e, n), self.button_9)
+        self.Bind(wx.EVT_BUTTON, self.on_button_del, self.button_del)
+        self.Bind(wx.EVT_BUTTON, self.on_button_code_go, self.button_codego)
+        self.Bind(wx.EVT_BUTTON, self.on_button_search_go, self.button_searchgo)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up_search_filter, self.textctrl_searchfilter)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up_code, self.textctrl_code)
+        self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_listbox_dclick_searchresults, self.listbox_searchresults)
 
         self.Show(True)
         #self.ShowFullScreen(True, style=wx.FULLSCREEN_ALL)
@@ -302,44 +291,8 @@ class MainWindow(wx.Frame):
     def on_exit(self, e):
         self.Close(True)
 
-    def on_button_0(self, e):
-        self.textctrl_code.AppendText("0")
-        self.textctrl_code.SetFocus()
-
-    def on_button_1(self, e):
-        self.textctrl_code.AppendText("1")
-        self.textctrl_code.SetFocus()
-
-    def on_button_2(self, e):
-        self.textctrl_code.AppendText("2")
-        self.textctrl_code.SetFocus()
-
-    def on_button_3(self, e):
-        self.textctrl_code.AppendText("3")
-        self.textctrl_code.SetFocus()
-
-    def on_button_4(self, e):
-        self.textctrl_code.AppendText("4")
-        self.textctrl_code.SetFocus()
-
-    def on_button_5(self, e):
-        self.textctrl_code.AppendText("5")
-        self.textctrl_code.SetFocus()
-
-    def on_button_6(self, e):
-        self.textctrl_code.AppendText("6")
-        self.textctrl_code.SetFocus()
-
-    def on_button_7(self, e):
-        self.textctrl_code.AppendText("7")
-        self.textctrl_code.SetFocus()
-
-    def on_button_8(self, e):
-        self.textctrl_code.AppendText("8")
-        self.textctrl_code.SetFocus()
-
-    def on_button_9(self, e):
-        self.textctrl_code.AppendText("9")
+    def on_button_num(self, e, num):
+        self.textctrl_code.AppendText(str(num))
         self.textctrl_code.SetFocus()
 
     def on_button_del(self, e):
@@ -381,7 +334,7 @@ class MainWindow(wx.Frame):
             
         e.StopPropagation()
 
-    def on_left_dclick_search_results(self, e):
+    def on_listbox_dclick_searchresults(self, e):
         tickets = []
         email = self.listbox_searchresults.GetStringSelection()
         for ticket in self.doc.getElementsByTagName("ticket"):
@@ -545,6 +498,6 @@ class MainWindow(wx.Frame):
 argparser = argparse.ArgumentParser(description="BurnScan Ticket Station")
 argparser.add_argument("--cryptconfig", action='store_true', help="Encrypt the admin password (if it isn't already encrypted).")
 
-app = wx.App(redirect=True)
+app = wx.App()
 frame = MainWindow(None, wx.ID_ANY, 'BurnScan')
 app.MainLoop()

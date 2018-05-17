@@ -87,3 +87,11 @@ ENV/
 
 # Rope project settings
 .ropeproject
+
+smb2_bonus_chance_lose.wav
+
+smb2_grow.wav
+
+BurnScan.cfg
+
+brt_ticket_export_2018.xml
