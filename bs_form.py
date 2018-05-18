@@ -23,10 +23,10 @@ import random
 import hashlib
 import argparse
 import re
-import xml.dom.minidom
+import sqlite3
 import wx
 import wx.adv
-import wx.media
+import pygame
 import ConfigParser
 
 from datetime import datetime
@@ -85,10 +85,16 @@ class MainWindow(wx.Frame):
             self.crypt_config()
 
         try:
-            self.doc = xml.dom.minidom.parse(self.config.get(CFG_SECTION_GENERAL, CFG_DATABASE_PATH))
-        except IOError as err:
+            self.ticket_db = sqlite3.connect(self.config.get(CFG_SECTION_GENERAL, CFG_DATABASE_PATH))
+        except Exception as err:
             print("Error loading database: {0}".format(err))
             sys.exit()
+
+        self.ticket_db.row_factory = sqlite3.Row
+
+        # configure sounds
+        self.sound_accept = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ACCEPT)
+        self.sound_reject = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_REJECT)
 
         # create the menus
         fileMenu = wx.Menu()
@@ -134,9 +140,6 @@ class MainWindow(wx.Frame):
         self.button_8 = wx.Button(self, ID_BUTTON_8, "&8")
         self.button_9 = wx.Button(self, ID_BUTTON_9, "&9")
         self.button_del = wx.Button(self, ID_BUTTON_DEL, "&del")
-
-        # populate the data
-        #self.list_people()
 
         # add form controls
         self.CreateStatusBar()
@@ -227,20 +230,19 @@ class MainWindow(wx.Frame):
         self.Show(True)
         #self.ShowFullScreen(True, style=wx.FULLSCREEN_ALL)
         self.set_stats()
-        self.load_sound()
         self.textctrl_code.SetFocus()
-
-    def save_xml(self):
-        fp = open(self.database_path,"w")
-        self.doc.writexml(fp, "", "", "", "UTF-8")
 
     def load_config(self):
         self.config = ConfigParser.RawConfigParser()
         self.config.read(CFG_PATH)
 
-    def load_sound(self):
-        self.player_accept = wx.adv.Sound(self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ACCEPT))
-        self.player_reject = wx.adv.Sound(self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_REJECT))
+    def play_sound_accept(self):
+        pygame.mixer.Sound(self.sound_accept).play()
+        return True
+
+    def play_sound_reject(self):
+        pygame.mixer.Sound(self.sound_reject).play()
+        return True
 
     def crypt_config(self):
         if self.config.has_option(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW):
@@ -302,7 +304,6 @@ class MainWindow(wx.Frame):
     def on_key_up_search_filter(self, e):
         if e.GetKeyCode() == wx.WXK_RETURN:
             self.list_people()
-
         e.StopPropagation()
 
     def on_key_up_code(self, e):
@@ -310,7 +311,6 @@ class MainWindow(wx.Frame):
                 self.textctrl_code.GetValue() != "":
             self.check_code()
             self.listbox_searchresults.Clear()
-
         e.StopPropagation()
 
     def on_key_up(self, e):
@@ -331,173 +331,191 @@ class MainWindow(wx.Frame):
 
     def on_button_search_go(self, e):
         self.list_people()
-            
         e.StopPropagation()
 
     def on_listbox_dclick_searchresults(self, e):
-        tickets = []
-        email = self.listbox_searchresults.GetStringSelection()
-        for ticket in self.doc.getElementsByTagName("ticket"):
-            match = False
-            for user_email in ticket.getElementsByTagName("user_email"):
-                try:
-                    if user_email.childNodes[0].data == email:
-                        match = True
-                except:
-                    pass
-            for name in ticket.getElementsByTagName("assigned_name"):
-                try:
-                    if name.childNodes[0].data == email:
-                        match = True
-                except:
-                    pass
-            if match:
-                tier = ticket.parentNode.parentNode
-                tier_code = tier.getAttribute("code")
-                ticket_number = ticket.getAttribute("number")
-                for ticket_code_node in ticket.getElementsByTagName("code"):
-                    ticket_code = ticket_code_node.childNodes[0].data
-                code = "%s%05i%s" % (tier_code, int(ticket_number), ticket_code)
-                entered = ticket.getAttribute("entered")
-                if entered and entered != "":
-                    entered_date = datetime.strptime(entered,
-                            "%Y-%m-%d %H:%M:%S")
-                    code = "ENTERED %s" % code
-                tickets.append(code)
+        ticket_id = self.listbox_searchresults.GetClientData(self.listbox_searchresults.GetSelection())
+        return self.check_ticket(ticket_id)
 
-        dialog = wx.SingleChoiceDialog(self, "Select the ticket to enter",
-            "Tickets", tickets)
+    def wristband_entry(self):
+        wristband_dialog = wx.TextEntryDialog(self,"Enter Wristband ID")
+        if wristband_dialog.ShowModal() == wx.ID_OK:
+            wristband_id = abs(int(wristband_dialog.GetValue()))
+        else:
+            return -1
 
-        if dialog.ShowModal() == wx.ID_OK:
-            ticket_code = dialog.GetStringSelection()
-            self.textctrl_code.Clear()
-            self.textctrl_code.AppendText(ticket_code)
-            self.check_code()
+        cursor = self.ticket_db.cursor()
+        sql_wristband_search = '''SELECT COUNT(*) FROM `checkins` WHERE `wristband` = '{0}' LIMIT 1'''
+        cursor.execute(sql_wristband_search.format(wristband_id))
+        wristband_count = cursor.fetchone()
+        cursor.close()
 
-        dialog.Destroy()
+        if int(wristband_count[0]) != 0:
+            wristband_error = 'Wristband ID "%s" already entered!' % (wristband_id)
+            error_dialog = wx.MessageDialog(self, wristband_error,'Error', wx.OK|wx.ICON_ERROR|wx.STAY_ON_TOP)
+            error_dialog.ShowModal()
+            return 0
+
+        return wristband_id
 
     def list_people(self):
         self.listbox_searchresults.Clear()
-        email_match = self.textctrl_searchfilter.GetValue()
-        last_person = ''
-        for ticket_node in self.doc.getElementsByTagName("ticket"):
-            person = ''
-            try:
-                user_email_node = ticket_node.getElementsByTagName("user_email")
-                user_email = user_email_node[0].childNodes[0].data
-                if email_match == '' or email_match.lower() in\
-                        user_email.lower():
-                    person = user_email
-            except:
-                pass
-            try:
-                name_node = ticket_node.getElementsByTagName("assigned_name")
-                name = name_node[0].childNodes[0].data
-                if email_match == '' or email_match.lower() in name.lower():
-                    person = name
-            except:
-                pass
-            if person != '' and person != last_person:
-                self.listbox_searchresults.Append(person)
-                last_person = person
+        searchfilter = self.textctrl_searchfilter.GetValue()
+
+        if not re.match('[0-9a-zA-Z@\.\-]+', searchfilter):
+            self.textctrl_searchfilter.Clear()
+            return False
+
+        cursor = self.ticket_db.cursor()
+        sql_search = '''SELECT * FROM `tickets`
+            WHERE `purchase_email` LIKE '%%{0}%%'
+            OR `purchase_name` LIKE '%%{0}%%'
+            OR `assigned_email` LIKE '%%{0}%%'
+            OR `waiver_first_name` LIKE '%%{0}%%'
+            OR `waiver_last_name` LIKE '%%{0}%%'
+            ORDER BY waiver_last_name, waiver_first_name'''
+        cursor.execute(sql_search.format(searchfilter))
+        res_search = cursor.fetchall()
+        cursor.close()
+ 
+        t = 0
+        for ticket in res_search:
+            if not ticket['assigned_email']:
+                email = ticket['purchase_email']
+            else:
+                email = ticket['assigned_email']
+            person = "%s, %s <%s>" % (ticket['waiver_last_name'], ticket['waiver_first_name'], email)
+            self.listbox_searchresults.Append(person, ticket['id'])
+            t += 1
+        
+        if t == 0:
+            self.listbox_searchresults.Append('No Results!', 0)
+
         self.textctrl_code.SetFocus()
 
     def set_stats(self):
         tickets_sold = 0
         tickets_used = 0
-        for node in self.doc.getElementsByTagName("ticket"):
-            tickets_sold += 1
-            entered = node.getAttribute("entered")
-            if entered and entered != "":
-                tickets_used += 1
+
+        cursor = self.ticket_db.cursor()
+        sql_sold = '''SELECT COUNT(*) FROM `tickets`'''
+        sql_used = '''SELECT DISTINCT COUNT(`checkins`.`ticket_id`) FROM `checkins`'''
+        cursor.execute(sql_sold)
+        res_sold = cursor.fetchone()
+        tickets_sold = int(res_sold[0])
+        cursor.execute(sql_used)
+        res_used = cursor.fetchone()
+        tickets_used = int(res_used[0])
+        cursor.close()
 
         self.statictext_soldvalue.SetLabel(str(tickets_sold))
         self.statictext_usedvalue.SetLabel(str(tickets_used))
+
         self.textctrl_code.SetFocus()
 
     def check_code(self):
-        try:
-            code = self.textctrl_code.GetValue()
-            check_tier_code = code[0]
-            check_ticket_number = code[1:6]
-            check_ticket_code = code[6:10]
-            found = False
-            
-            for tier in self.doc.getElementsByTagName("tier"):
-                tier_code = tier.getAttribute("code")
-                if tier_code and tier_code == check_tier_code:
-                    for ticket in tier.getElementsByTagName("ticket"):
-                        ticket_number = ticket.getAttribute("number")
-                        if ticket_number and int(ticket_number) ==\
-                                int(check_ticket_number):
-                            if self.check_ticket(ticket, check_ticket_code):
-                                found = True
-                                break
-            
-            if not found:
-                self.textctrl_result.SetValue("Not Found")
-                self.textctrl_result.SetBackgroundColour(wx.BLUE)
-                self.player_reject.Play()
+        code = self.textctrl_code.GetValue()
 
+        if not re.match('[0-9]{10}', code):
             self.textctrl_code.Clear()
-            self.set_stats()
-            self.textctrl_code.SetFocus()
-        except Exception:
+            return False
+
+        check_tier_code = code[0]
+        check_ticket_number = code[1:6]
+        check_ticket_code = code[6:10]
+        
+        cursor = self.ticket_db.cursor()
+        sql_ticket = '''SELECT *
+            FROM `tickets`
+            WHERE `tier_code` = '{0}'
+            AND `ticket_number` = '{1}'
+            AND `ticket_code` = '{2}'
+            LIMIT 1'''
+        cursor.execute(sql_ticket.format(check_tier_code, check_ticket_number, check_ticket_code))
+        ticket = cursor.fetchone()
+        cursor.close()
+
+        if ticket is None:
             self.textctrl_code.Clear()
-            self.textctrl_result.SetValue("Error")
-            self.textctrl_result.SetBackgroundColour(wx.BLUE)
-            self.player_reject.Play()
-            self.textctrl_code.SetFocus()
+            self.textctrl_result.SetValue('Ticket Not Found!')
+            self.textctrl_result.SetBackgroundColour(wx.RED)
+            self.play_sound_reject()
+            return False
+        
+        ticket_id = ticket['id']
+
+        return self.check_ticket(ticket_id)
     
-    def check_ticket(self, ticket, check_ticket_code):
-        self.textctrl_result.SetValue("Please Wait")
-        for ticket_code_node in ticket.getElementsByTagName("code"):
-            if ticket_code_node.childNodes[0].data == check_ticket_code:
-                is_entered = True
-                entered = ticket.getAttribute("entered")
-                if entered and entered != "":
-                    entered_date = datetime.strptime(entered, "%Y-%m-%d %H:%M:%S")
-                    since_entered = datetime.now() - entered_date
-                    entered_expiration = timedelta(seconds=10)
-                    if since_entered > entered_expiration:
-                        is_entered = False
-                        self.textctrl_result.SetValue(
-                                "Already entered: %s" % entered_date.strftime(
-                                    "%a, %H:%M"))
-                        self.textctrl_result.SetBackgroundColour(wx.RED)
-                        self.player_reject.Play()
-                        return True
-                    else:
-                        is_entered = False
-                        self.textctrl_result.SetValue(
-                                "Check double scan: %s" % entered_date.strftime(
-                                    "%a, %H:%M"))
-                        return True
+    def check_ticket(self, ticket_id):
+        ticket_cursor = self.ticket_db.cursor()
+        sql_ticket = '''SELECT `tickets`.*,
+            (SELECT COUNT(*)
+                FROM `checkins`
+                WHERE `checkins`.`ticket_id` = `tickets`.`id`
+            ) AS `wristband_count`
+            FROM `tickets`
+            WHERE `id` = '{0}'
+            LIMIT 1'''
+        ticket_cursor.execute(sql_ticket.format(ticket_id))
+        ticket = ticket_cursor.fetchone()
+        ticket_cursor.close()
 
-                if is_entered:
-                    self.textctrl_result.SetBackgroundColour(wx.GREEN)
-                    ticket.setAttribute("entered",
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    self.save_xml()
-                    self.textctrl_result.SetValue("Accepted")
-                    self.player_accept.Play()
-                    return True
-            else:
-                user_email = ""
-                assigned_name = ""
-                for node in ticket.getElementsByTagName("user_email"):
-                    user_email = node.childNodes[0].data
-                for node in ticket.getElementsByTagName("assigned_name"):
-                    assigned_name = node.childNodes[0].data
-                self.textctrl_result.SetValue("Code mismatch or xfer from %s to %s" % (user_email, assigned_name))
+        if int(ticket['wristband_count']) > 0:
+            confirm_dialog = wx.MessageDialog(self, 'Ticket already used! Are you replacing a wristband?','Warning!', wx.YES_NO|wx.NO_DEFAULT|wx.ICON_EXCLAMATION|wx.STAY_ON_TOP)
+            if confirm_dialog.ShowModal() == wx.ID_NO:
+                self.textctrl_code.Clear()
+                self.textctrl_result.SetValue('Ticket already used!')
                 self.textctrl_result.SetBackgroundColour(wx.RED)
-                self.player_reject.Play()
-                return True
-        return False
+                self.play_sound_reject()
+                return False
+
+        if not ticket['assigned_email']:
+            email = ticket['purchase_email']
+        else:
+            email = ticket['assigned_email']
+
+        message = 'Ticket#: %s%05i%s\n\n' % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
+        message += '#### CHECK ID WITH INFORMATION BELOW ####\n\n'
+        message += 'Name: %s, %s\n' % (ticket['waiver_last_name'], ticket['waiver_first_name'])
+        message += 'State: %s\n' % (ticket['waiver_state'])
+        message += 'Email: %s\n\n' % (email)
+        message += '#### CHECK ID WITH INFORMATION ABOVE ####\n\n'
+        message += 'Purchaser Name: %s\n' % (ticket['purchase_name'])
+        message += 'Purchaser Email: %s' % (ticket['purchase_email'])
+
+        confirm_dialog = wx.MessageDialog(self, message,'Confirm Selection', wx.OK|wx.CANCEL|wx.CANCEL_DEFAULT|wx.ICON_QUESTION|wx.STAY_ON_TOP)
+
+        if confirm_dialog.ShowModal() == wx.ID_CANCEL:
+            return False
+        
+        confirm_dialog.Destroy()
+
+        wristband_id = 0
+        while wristband_id == 0:
+            wristband_id = self.wristband_entry()
+
+        if int(wristband_id) < 1:
+            return False
+
+        checkin_cursor = self.ticket_db.cursor()
+        sql_checkin = '''INSERT INTO `checkins`(`ticket_id`,`date`,`wristband`) VALUES ('{0}', '{1}', '{2}')'''
+        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        checkin_cursor.execute(sql_checkin.format(ticket_id, date, wristband_id))
+        checkin_cursor.close()
+        self.ticket_db.commit()
+
+        self.textctrl_searchfilter.Clear()
+        self.listbox_searchresults.Clear()
+        self.textctrl_code.Clear()
+        self.textctrl_result.SetValue('Ticket accepted!')
+        self.textctrl_result.SetBackgroundColour(wx.GREEN)
+        self.play_sound_accept()
+        return True
 
 argparser = argparse.ArgumentParser(description="BurnScan Ticket Station")
 argparser.add_argument("--cryptconfig", action='store_true', help="Encrypt the admin password (if it isn't already encrypted).")
 
+pygame.init()
 app = wx.App()
 frame = MainWindow(None, wx.ID_ANY, 'BurnScan')
 app.MainLoop()

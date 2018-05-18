@@ -95,3 +95,5 @@ smb2_grow.wav
 BurnScan.cfg
 
 brt_ticket_export_2018.xml
+*.db-journal
+*.db
