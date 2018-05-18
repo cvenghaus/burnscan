@@ -399,7 +399,7 @@ class MainWindow(wx.Frame):
 
         cursor = self.ticket_db.cursor()
         sql_sold = '''SELECT COUNT(*) FROM `tickets`'''
-        sql_used = '''SELECT DISTINCT COUNT(`checkins`.`ticket_id`) FROM `checkins`'''
+        sql_used = '''SELECT COUNT(DISTINCT `ticket_id`) FROM `checkins`'''
         cursor.execute(sql_sold)
         res_sold = cursor.fetchone()
         tickets_sold = int(res_sold[0])
@@ -452,7 +452,13 @@ class MainWindow(wx.Frame):
             (SELECT COUNT(*)
                 FROM `checkins`
                 WHERE `checkins`.`ticket_id` = `tickets`.`id`
-            ) AS `wristband_count`
+            ) AS `wristband_count`,
+            (SELECT `wristband`
+                FROM `checkins`
+                WHERE `checkins`.`ticket_id` = `tickets`.`id`
+                ORDER BY `checkins`.`date` DESC
+                LIMIT 1
+            ) AS `wristband_current`
             FROM `tickets`
             WHERE `id` = '{0}'
             LIMIT 1'''
@@ -474,7 +480,10 @@ class MainWindow(wx.Frame):
         else:
             email = ticket['assigned_email']
 
-        message = 'Ticket#: %s%05i%s\n\n' % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
+        message = 'Ticket#: %s%05i%s\n' % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
+        if int(ticket['wristband_count']) > 0:
+        	message += 'Current Wristband: %s\n' % (ticket['wristband_current'])
+        message += 'Wristbands Used: %s\n\n' % (ticket['wristband_count'])
         message += '#### CHECK ID WITH INFORMATION BELOW ####\n\n'
         message += 'Name: %s, %s\n' % (ticket['waiver_last_name'], ticket['waiver_first_name'])
         message += 'State: %s\n' % (ticket['waiver_state'])
