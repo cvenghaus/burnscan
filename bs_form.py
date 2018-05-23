@@ -111,7 +111,7 @@ class MainWindow(wx.Frame):
         self.SetFont(self.font_med)
 
         # create the form elements
-        self.textctrl_code = wx.TextCtrl(self, ID_TEXTCTRL_CODE)
+        self.textctrl_code = wx.TextCtrl(self, ID_TEXTCTRL_CODE, style=wx.TE_PROCESS_ENTER)
         self.textctrl_code.SetEditable(True)
         self.textctrl_code.SetFont(self.font_big)
         self.button_codego = wx.Button(self, ID_BUTTON_CODEGO, "Go")
@@ -125,7 +125,7 @@ class MainWindow(wx.Frame):
         self.statictext_soldvalue = wx.StaticText(self, ID_STATICTEXT_SOLDVALUE, "0")
         self.statictext_usedlabel = wx.StaticText(self, ID_STATICTEXT_USEDLABEL, "Tix Used: ")
         self.statictext_usedvalue = wx.StaticText(self, ID_STATICTEXT_USEDVALUE, "0")
-        self.textctrl_searchfilter = wx.TextCtrl(self, ID_TEXTCTRL_SEARCHFILTER)
+        self.textctrl_searchfilter = wx.TextCtrl(self, ID_TEXTCTRL_SEARCHFILTER, style=wx.TE_PROCESS_ENTER)
         self.button_searchgo = wx.Button(self, ID_BUTTON_SEARCHGO, "&Go")
         self.listbox_searchresults = wx.ListBox(self, ID_LISTBOX_SEARCHRESULTS)
 
@@ -222,9 +222,9 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_BUTTON, lambda e, n=9: self.on_button_num(e, n), self.button_9)
         self.Bind(wx.EVT_BUTTON, self.on_button_del, self.button_del)
         self.Bind(wx.EVT_BUTTON, self.on_button_code_go, self.button_codego)
+        self.Bind(wx.EVT_TEXT_ENTER, self.on_button_code_go, self.textctrl_code)
         self.Bind(wx.EVT_BUTTON, self.on_button_search_go, self.button_searchgo)
-        self.Bind(wx.EVT_KEY_UP, self.on_key_up_search_filter, self.textctrl_searchfilter)
-        self.Bind(wx.EVT_KEY_UP, self.on_key_up_code, self.textctrl_code)
+        self.Bind(wx.EVT_TEXT_ENTER, self.on_button_search_go, self.textctrl_searchfilter)
         self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_listbox_dclick_searchresults, self.listbox_searchresults)
 
         self.Show(True)
@@ -301,30 +301,6 @@ class MainWindow(wx.Frame):
         self.textctrl_code.Remove(len(self.textctrl_code.GetValue()) - 1, len(self.textctrl_code.GetValue()))
         self.textctrl_code.SetFocus()
 
-    def on_key_up_search_filter(self, e):
-        if e.GetKeyCode() == wx.WXK_RETURN:
-            self.list_people()
-        e.StopPropagation()
-
-    def on_key_up_code(self, e):
-        if e.GetKeyCode() == wx.WXK_RETURN and\
-                self.textctrl_code.GetValue() != "":
-            self.check_code()
-            self.listbox_searchresults.Clear()
-        e.StopPropagation()
-
-    def on_key_up(self, e):
-        key_code = e.GetKeyCode()
-        if key_code == wx.WXK_RETURN:
-            self.check_code()
-            self.listbox_searchresults.Clear()
-        elif re.match('[0-9]', chr(key_code)):
-            self.textctrl_code.AppendText(chr(key_code))
-            self.textctrl_code.SetFocus()
-        if key_code == wx.WXK_BACK or key_code == wx.WXK_DELETE:
-            self.textctrl_code.Remove(len(self.textctrl_code.GetValue()) - 1, len(self.textctrl_code.GetValue()))
-            self.textctrl_code.SetFocus()
-
     def on_button_code_go(self, e):
         self.check_code()
         self.listbox_searchresults.Clear()
@@ -384,14 +360,12 @@ class MainWindow(wx.Frame):
                 email = ticket['purchase_email']
             else:
                 email = ticket['assigned_email']
-            person = "%s, %s <%s>" % (ticket['waiver_last_name'], ticket['waiver_first_name'], email)
+            person = "%i%05i%04i - %s, %s <%s>" % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'], ticket['waiver_last_name'], ticket['waiver_first_name'], email)
             self.listbox_searchresults.Append(person, ticket['id'])
             t += 1
         
         if t == 0:
             self.listbox_searchresults.Append('No Results!', 0)
-
-        self.textctrl_code.SetFocus()
 
     def set_stats(self):
         tickets_sold = 0
@@ -410,8 +384,6 @@ class MainWindow(wx.Frame):
 
         self.statictext_soldvalue.SetLabel(str(tickets_sold))
         self.statictext_usedvalue.SetLabel(str(tickets_used))
-
-        self.textctrl_code.SetFocus()
 
     def check_code(self):
         code = self.textctrl_code.GetValue()
@@ -436,10 +408,10 @@ class MainWindow(wx.Frame):
         cursor.close()
 
         if ticket is None:
-            self.textctrl_code.Clear()
             self.textctrl_result.SetValue('Ticket Not Found!')
             self.textctrl_result.SetBackgroundColour(wx.RED)
             self.play_sound_reject()
+            self.reset_all()
             return False
         
         ticket_id = ticket['id']
@@ -469,10 +441,10 @@ class MainWindow(wx.Frame):
         if int(ticket['wristband_count']) > 0:
             confirm_dialog = wx.MessageDialog(self, 'Ticket already used! Are you replacing a wristband?','Warning!', wx.YES_NO|wx.NO_DEFAULT|wx.ICON_EXCLAMATION|wx.STAY_ON_TOP)
             if confirm_dialog.ShowModal() == wx.ID_NO:
-                self.textctrl_code.Clear()
                 self.textctrl_result.SetValue('Ticket already used!')
                 self.textctrl_result.SetBackgroundColour(wx.RED)
                 self.play_sound_reject()
+                self.reset_all()
                 return False
 
         if not ticket['assigned_email']:
@@ -480,7 +452,7 @@ class MainWindow(wx.Frame):
         else:
             email = ticket['assigned_email']
 
-        message = 'Ticket#: %s%05i%s\n' % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
+        message = 'Ticket#: %i%05i%04i\n' % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
         if int(ticket['wristband_count']) > 0:
         	message += 'Current Wristband: %s\n' % (ticket['wristband_current'])
         message += 'Wristbands Used: %s\n\n' % (ticket['wristband_count'])
@@ -513,13 +485,19 @@ class MainWindow(wx.Frame):
         checkin_cursor.close()
         self.ticket_db.commit()
 
-        self.textctrl_searchfilter.Clear()
-        self.listbox_searchresults.Clear()
-        self.textctrl_code.Clear()
         self.textctrl_result.SetValue('Ticket accepted!')
         self.textctrl_result.SetBackgroundColour(wx.GREEN)
         self.play_sound_accept()
+        self.reset_all() 
         return True
+
+    def reset_all(self):
+        self.textctrl_searchfilter.Clear()
+        self.textctrl_code.Clear()
+        self.listbox_searchresults.Clear()
+        self.set_stats()
+        self.textctrl_code.SetFocus()
+        
 
 argparser = argparse.ArgumentParser(description="BurnScan Ticket Station")
 argparser.add_argument("--cryptconfig", action='store_true', help="Encrypt the admin password (if it isn't already encrypted).")
