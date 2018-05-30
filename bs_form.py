@@ -27,7 +27,7 @@ import sqlite3
 import wx
 import wx.adv
 import pygame
-import ConfigParser
+import configparser
 
 from datetime import datetime
 from datetime import timedelta
@@ -233,7 +233,7 @@ class MainWindow(wx.Frame):
         self.textctrl_code.SetFocus()
 
     def load_config(self):
-        self.config = ConfigParser.RawConfigParser()
+        self.config = configparser.RawConfigParser()
         self.config.read(CFG_PATH)
 
     def play_sound_accept(self):
@@ -252,14 +252,14 @@ class MainWindow(wx.Frame):
             self.config.remove_option(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW)
             configfile = open(CFG_PATH, 'wb')
             self.config.write(configfile)
-            print "Password encrypted!"
+            print("Password encrypted!")
             return True
         else:
             if self.config.has_option(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC):
-                print "Password already encrypted!"
+                print("Password already encrypted!")
                 return False
             else:
-                print "No password to encrypt!"
+                print("No password to encrypt!")
                 return False
 
     def on_about(self, e):
@@ -279,11 +279,11 @@ class MainWindow(wx.Frame):
                 password = self.config.get(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC)
                 answer_hash = hashlib.sha256(answer.encode()).hexdigest()
                 if answer_hash == password:
-                    authorized = True 
+                    authorized = True
             else:
                 password = self.config.get(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW)
-            	if answer == password:
-            	   authorized = True 
+                if answer == password:
+                   authorized = True
         if not authorized:
             dialog = wx.MessageDialog(self, 'Invalid Password', 'Authentication Failed')
             dialog.ShowModal()
