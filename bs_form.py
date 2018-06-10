@@ -19,6 +19,7 @@
 """
 
 import sys
+import time
 import random
 import hashlib
 import argparse
@@ -27,39 +28,16 @@ import sqlite3
 import wx
 import wx.adv
 import pygame
-import configparser
+
+# configparser changed its name in python 3
+try:
+    import ConfigParser as configparser
+except ImportError:
+    import configparser
 
 from datetime import datetime
 from datetime import timedelta
 from xml.dom.minidom import Node
-
-ID_ABOUT = 1110
-ID_EXIT = 1112
-
-ID_BUTTON_0 = 2110
-ID_BUTTON_1 = 2111
-ID_BUTTON_2 = 2112
-ID_BUTTON_3 = 2113
-ID_BUTTON_4 = 2114
-ID_BUTTON_5 = 2115
-ID_BUTTON_6 = 2116
-ID_BUTTON_7 = 2117
-ID_BUTTON_8 = 2118
-ID_BUTTON_9 = 2119
-ID_BUTTON_DEL = 2121
-ID_BUTTON_SEARCHGO = 2310
-ID_BUTTON_CODEGO = 2311
-
-ID_STATICTEXT_SOLDLABEL = 3110
-ID_STATICTEXT_SOLDVALUE = 3111
-ID_STATICTEXT_USEDLABEL = 3112
-ID_STATICTEXT_USEDVALUE = 3113
-
-ID_TEXTCTRL_CODE = 4110
-ID_TEXTCTRL_SEARCHFILTER = 4111
-ID_TEXTCTRL_RESULT = 4112
-
-ID_LISTBOX_SEARCHRESULTS = 5110
 
 CFG_PATH = 'BurnScan.cfg'
 
@@ -67,14 +45,22 @@ CFG_SECTION_GENERAL = 'General'
 CFG_DATABASE_PATH = 'database_path'
 CFG_SOUND_ACCEPT = 'sound_accept'
 CFG_SOUND_REJECT = 'sound_reject'
+CFG_SOUND_ERROR = 'sound_error'
 
 CFG_SECTION_SECURITY = 'Security'
 CFG_PASSWORD_RAW = 'password_raw'
 CFG_PASSWORD_ENC = 'password_enc'
 
+STATUS_NONE = 0
+STATUS_ACCEPT = 1
+STATUS_REJECT = 2
+STATUS_ERROR = 3
+
+DEFAULT_STATUS = 'Ready to scan!'
+
 class MainWindow(wx.Frame):
     def __init__(self, parent, id, title):
-        wx.Frame.__init__(self, parent, id, title, size=(948,738))
+        wx.Frame.__init__(self, parent, id, title)
         #self.panel = wx.Panel(self)
         #self.panel.Bind(wx.EVT_KEY_UP, self.on_key_up)
 
@@ -95,108 +81,101 @@ class MainWindow(wx.Frame):
         # configure sounds
         self.sound_accept = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ACCEPT)
         self.sound_reject = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_REJECT)
+        self.sound_error = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ERROR)
 
-        # create the menus
-        fileMenu = wx.Menu()
-        fileMenu.Append(ID_ABOUT, "&About", " About this program")
-        fileMenu.AppendSeparator()
-        fileMenu.Append(ID_EXIT, "E&xit", " Exit the program")
-
-        menuBar = wx.MenuBar()
-        menuBar.Append(fileMenu, "&File")
+        # set timer
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.update, self.timer)
+        self.timer.Start(1000)
+        self.status_check = 0
 
         # create fonts
-        self.font_med = wx.Font(16, wx.SWISS, wx.NORMAL, wx.NORMAL, False, u'Sans Serif')
-        self.font_big = wx.Font(18, wx.SWISS, wx.NORMAL, wx.NORMAL, False, u'Sans Serif')
+        self.font_med = wx.Font(18, wx.SWISS, wx.NORMAL, wx.NORMAL, False, u'Sans Serif')
+        self.font_big = wx.Font(40, wx.SWISS, wx.NORMAL, wx.NORMAL, False, u'Sans Serif')
         self.SetFont(self.font_med)
 
         # create the form elements
-        self.textctrl_code = wx.TextCtrl(self, ID_TEXTCTRL_CODE, style=wx.TE_PROCESS_ENTER)
+        self.textctrl_code = wx.TextCtrl(self, wx.ID_ANY, style=wx.TE_PROCESS_ENTER)
         self.textctrl_code.SetEditable(True)
         self.textctrl_code.SetFont(self.font_big)
-        self.button_codego = wx.Button(self, ID_BUTTON_CODEGO, "Go")
+        self.button_codego = wx.Button(self, wx.ID_ANY, "Go")
 
-        self.textctrl_result = wx.TextCtrl(self, ID_TEXTCTRL_RESULT, "Ready to scan")
+        self.textctrl_result = wx.TextCtrl(self, wx.ID_ANY, DEFAULT_STATUS)
         self.textctrl_result.SetEditable(False)
-        self.textctrl_result.SetFont(self.font_big)
+        self.textctrl_result.SetFont(self.font_med)
         self.textctrl_result.SetBackgroundColour(wx.WHITE)
 
-        self.statictext_soldlabel = wx.StaticText(self, ID_STATICTEXT_SOLDLABEL, "Tix Sold: ")
-        self.statictext_soldvalue = wx.StaticText(self, ID_STATICTEXT_SOLDVALUE, "0")
-        self.statictext_usedlabel = wx.StaticText(self, ID_STATICTEXT_USEDLABEL, "Tix Used: ")
-        self.statictext_usedvalue = wx.StaticText(self, ID_STATICTEXT_USEDVALUE, "0")
-        self.textctrl_searchfilter = wx.TextCtrl(self, ID_TEXTCTRL_SEARCHFILTER, style=wx.TE_PROCESS_ENTER)
-        self.button_searchgo = wx.Button(self, ID_BUTTON_SEARCHGO, "&Go")
-        self.listbox_searchresults = wx.ListBox(self, ID_LISTBOX_SEARCHRESULTS)
+        self.statictext_soldlabel = wx.StaticText(self, wx.ID_ANY, "Tix Sold: ")
+        self.statictext_soldvalue = wx.StaticText(self, wx.ID_ANY, "0")
+        self.statictext_usedlabel = wx.StaticText(self, wx.ID_ANY, "Tix Used: ")
+        self.statictext_usedvalue = wx.StaticText(self, wx.ID_ANY, "0")
 
-        self.button_0 = wx.Button(self, ID_BUTTON_0, "&0")
-        self.button_1 = wx.Button(self, ID_BUTTON_1, "&1")
-        self.button_2 = wx.Button(self, ID_BUTTON_2, "&2")
-        self.button_3 = wx.Button(self, ID_BUTTON_3, "&3")
-        self.button_4 = wx.Button(self, ID_BUTTON_4, "&4")
-        self.button_5 = wx.Button(self, ID_BUTTON_5, "&5")
-        self.button_6 = wx.Button(self, ID_BUTTON_6, "&6")
-        self.button_7 = wx.Button(self, ID_BUTTON_7, "&7")
-        self.button_8 = wx.Button(self, ID_BUTTON_8, "&8")
-        self.button_9 = wx.Button(self, ID_BUTTON_9, "&9")
-        self.button_del = wx.Button(self, ID_BUTTON_DEL, "&del")
+        self.listctrl_searchresults = wx.ListCtrl(self, wx.ID_ANY, style=wx.LC_HRULES | wx.LC_REPORT | wx.LC_SINGLE_SEL)
 
-        # add form controls
+        self.button_0 = wx.Button(self, wx.ID_ANY, "&0")
+        self.button_1 = wx.Button(self, wx.ID_ANY, "&1")
+        self.button_2 = wx.Button(self, wx.ID_ANY, "&2")
+        self.button_3 = wx.Button(self, wx.ID_ANY, "&3")
+        self.button_4 = wx.Button(self, wx.ID_ANY, "&4")
+        self.button_5 = wx.Button(self, wx.ID_ANY, "&5")
+        self.button_6 = wx.Button(self, wx.ID_ANY, "&6")
+        self.button_7 = wx.Button(self, wx.ID_ANY, "&7")
+        self.button_8 = wx.Button(self, wx.ID_ANY, "&8")
+        self.button_9 = wx.Button(self, wx.ID_ANY, "&9")
+        self.button_del = wx.Button(self, wx.ID_ANY, "&del")
+
+        # set a statusbar
         self.CreateStatusBar()
-        self.SetMenuBar(menuBar)
 
-        self.sizer_controls = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_panel = wx.BoxSizer(wx.VERTICAL)
-
-        self.sizer_panel_stats = wx.BoxSizer(wx.VERTICAL)
+        # create sizers and place elements
+        self.sizer_code = wx.BoxSizer(wx.HORIZONTAL)
+        self.sizer_code.Add(self.textctrl_code, 1, wx.EXPAND)
+        self.sizer_code.Add(self.button_codego, 0, wx.EXPAND)
+        
         self.sizer_panel_stats_sold = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_panel_stats_sold.Add(self.statictext_soldlabel, 2, wx.EXPAND)
-        self.sizer_panel_stats_sold.Add(self.statictext_soldvalue, 1, wx.EXPAND)
+        self.sizer_panel_stats_sold.Add(self.statictext_soldlabel, 2, wx.ALIGN_CENTER)
+        self.sizer_panel_stats_sold.Add(self.statictext_soldvalue, 1, wx.ALIGN_CENTER)
+        
         self.sizer_panel_stats_used = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_panel_stats_used.Add(self.statictext_usedlabel, 2, wx.EXPAND)
-        self.sizer_panel_stats_used.Add(self.statictext_usedvalue, 1, wx.EXPAND)
+        self.sizer_panel_stats_used.Add(self.statictext_usedlabel, 2, wx.ALIGN_CENTER)
+        self.sizer_panel_stats_used.Add(self.statictext_usedvalue, 1, wx.ALIGN_CENTER)
+        
+        self.sizer_panel_stats = wx.BoxSizer(wx.VERTICAL)
         self.sizer_panel_stats.Add(self.sizer_panel_stats_sold, 1, wx.EXPAND)
         self.sizer_panel_stats.Add(self.sizer_panel_stats_used, 1, wx.EXPAND)
 
-        self.sizer_panel_search = wx.BoxSizer(wx.VERTICAL)
-        self.sizer_panel_search_filter = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_panel_search_filter.Add(self.textctrl_searchfilter, 2, wx.EXPAND)
-        self.sizer_panel_search_filter.Add(self.button_searchgo, 1, wx.EXPAND)
-        self.sizer_panel_search_results = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_panel_search_results.Add(self.listbox_searchresults, 1, wx.EXPAND)
-        self.sizer_panel_search.Add(self.sizer_panel_search_filter, 0, wx.EXPAND)
-        self.sizer_panel_search.Add(self.sizer_panel_search_results, 1, wx.EXPAND)
-
+        self.sizer_panel = wx.BoxSizer(wx.VERTICAL)
         self.sizer_panel.Add(self.sizer_panel_stats, 1, wx.EXPAND)
-        self.sizer_panel.Add(self.sizer_panel_search, 7, wx.EXPAND)
+        self.sizer_panel.Add(self.listctrl_searchresults, 7, wx.EXPAND)
 
-        self.sizer_keypad = wx.BoxSizer(wx.VERTICAL)
         self.sizer_keypad_row1 = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_keypad_row2 = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_keypad_row3 = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_keypad_row4 = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_keypad_row1.Add(self.button_7, 1, wx.EXPAND)
         self.sizer_keypad_row1.Add(self.button_8, 1, wx.EXPAND)
         self.sizer_keypad_row1.Add(self.button_9, 1, wx.EXPAND)
+        
+        self.sizer_keypad_row2 = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_keypad_row2.Add(self.button_4, 1, wx.EXPAND)
         self.sizer_keypad_row2.Add(self.button_5, 1, wx.EXPAND)
         self.sizer_keypad_row2.Add(self.button_6, 1, wx.EXPAND)
+        
+        self.sizer_keypad_row3 = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_keypad_row3.Add(self.button_1, 1, wx.EXPAND)
         self.sizer_keypad_row3.Add(self.button_2, 1, wx.EXPAND)
         self.sizer_keypad_row3.Add(self.button_3, 1, wx.EXPAND)
+        
+        self.sizer_keypad_row4 = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_keypad_row4.Add(self.button_0, 2, wx.EXPAND)
         self.sizer_keypad_row4.Add(self.button_del, 1, wx.EXPAND)
+        
+        self.sizer_keypad = wx.BoxSizer(wx.VERTICAL)
         self.sizer_keypad.Add(self.sizer_keypad_row1, 1, wx.EXPAND)
         self.sizer_keypad.Add(self.sizer_keypad_row2, 1, wx.EXPAND)
         self.sizer_keypad.Add(self.sizer_keypad_row3, 1, wx.EXPAND)
         self.sizer_keypad.Add(self.sizer_keypad_row4, 1, wx.EXPAND)
 
+        self.sizer_controls = wx.BoxSizer(wx.HORIZONTAL)
         self.sizer_controls.Add(self.sizer_panel, 1, wx.EXPAND)
         self.sizer_controls.Add(self.sizer_keypad, 1, wx.EXPAND)
-
-        self.sizer_code = wx.BoxSizer(wx.HORIZONTAL)
-        self.sizer_code.Add(self.textctrl_code, 1, wx.EXPAND)
-        self.sizer_code.Add(self.button_codego, 0, wx.EXPAND)
 
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.sizer.Add(self.sizer_code, 0, wx.EXPAND)
@@ -208,8 +187,6 @@ class MainWindow(wx.Frame):
         self.sizer.Fit(self)
 
         # attach events
-        self.Bind(wx.EVT_MENU, self.on_about, id=ID_ABOUT)
-        self.Bind(wx.EVT_MENU, self.on_exit, id=ID_EXIT)
         self.Bind(wx.EVT_BUTTON, lambda e, n=0: self.on_button_num(e, n), self.button_0)
         self.Bind(wx.EVT_BUTTON, lambda e, n=1: self.on_button_num(e, n), self.button_1)
         self.Bind(wx.EVT_BUTTON, lambda e, n=2: self.on_button_num(e, n), self.button_2)
@@ -223,14 +200,11 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_BUTTON, self.on_button_del, self.button_del)
         self.Bind(wx.EVT_BUTTON, self.on_button_code_go, self.button_codego)
         self.Bind(wx.EVT_TEXT_ENTER, self.on_button_code_go, self.textctrl_code)
-        self.Bind(wx.EVT_BUTTON, self.on_button_search_go, self.button_searchgo)
-        self.Bind(wx.EVT_TEXT_ENTER, self.on_button_search_go, self.textctrl_searchfilter)
-        self.Bind(wx.EVT_LISTBOX_DCLICK, self.on_listbox_dclick_searchresults, self.listbox_searchresults)
+        self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_listctrl_searchresults_activated, self.listctrl_searchresults)
 
         self.Show(True)
         #self.ShowFullScreen(True, style=wx.FULLSCREEN_ALL)
-        self.set_stats()
-        self.textctrl_code.SetFocus()
+        self.reset_all()
 
     def load_config(self):
         self.config = configparser.RawConfigParser()
@@ -242,6 +216,10 @@ class MainWindow(wx.Frame):
 
     def play_sound_reject(self):
         pygame.mixer.Sound(self.sound_reject).play()
+        return True
+
+    def play_sound_error(self):
+        pygame.mixer.Sound(self.sound_error).play()
         return True
 
     def crypt_config(self):
@@ -261,14 +239,6 @@ class MainWindow(wx.Frame):
             else:
                 print("No password to encrypt!")
                 return False
-
-    def on_about(self, e):
-        d = wx.MessageDialog(self, "BurnScan ticket scanning station\n"
-            "Created by Benjamin Sarsgard"
-            , "About BurnScan", wx.OK)
-        d.ShowModal()
-        d.Destroy()
-        self.textctrl_code.SetFocus()
 
     def authenticate(self):
         authorized = False
@@ -290,9 +260,6 @@ class MainWindow(wx.Frame):
         dialog.Destroy()
         return authorized
 
-    def on_exit(self, e):
-        self.Close(True)
-
     def on_button_num(self, e, num):
         self.textctrl_code.AppendText(str(num))
         self.textctrl_code.SetFocus()
@@ -302,16 +269,18 @@ class MainWindow(wx.Frame):
         self.textctrl_code.SetFocus()
 
     def on_button_code_go(self, e):
-        self.check_code()
-        self.listbox_searchresults.Clear()
+        query = self.textctrl_code.GetValue()
+        return self.check_entry(query)
 
-    def on_button_search_go(self, e):
-        self.list_people()
-        e.StopPropagation()
+    def on_listctrl_searchresults_activated(self, e):
+        query = e.GetLabel()
+        return self.check_entry(query)
 
-    def on_listbox_dclick_searchresults(self, e):
-        ticket_id = self.listbox_searchresults.GetClientData(self.listbox_searchresults.GetSelection())
-        return self.check_ticket(ticket_id)
+    def check_entry(self, query):
+        if re.match('[0-9]{10}', query):
+            return self.check_code(query)
+        else:
+            return self.search_tickets(query)
 
     def wristband_entry(self):
         wristband_dialog = wx.TextEntryDialog(self,"Enter Wristband ID")
@@ -334,12 +303,11 @@ class MainWindow(wx.Frame):
 
         return wristband_id
 
-    def list_people(self):
-        self.listbox_searchresults.Clear()
-        searchfilter = self.textctrl_searchfilter.GetValue()
+    def search_tickets(self, searchfilter):
+        self.reset_searchresults()
+        self.textctrl_code.SetFocus()
 
         if not re.match('[0-9a-zA-Z@\.\-]+', searchfilter):
-            self.textctrl_searchfilter.Clear()
             return False
 
         cursor = self.ticket_db.cursor()
@@ -351,21 +319,27 @@ class MainWindow(wx.Frame):
             OR `waiver_last_name` LIKE '%%{0}%%'
             ORDER BY waiver_last_name, waiver_first_name'''
         cursor.execute(sql_search.format(searchfilter))
-        res_search = cursor.fetchall()
+        search_results = cursor.fetchall()
         cursor.close()
  
         t = 0
-        for ticket in res_search:
+        for ticket in search_results:
             if not ticket['assigned_email']:
-                email = ticket['purchase_email']
+                ticket_email = ticket['purchase_email']
             else:
-                email = ticket['assigned_email']
-            person = "%i%05i%04i - %s, %s <%s>" % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'], ticket['waiver_last_name'], ticket['waiver_first_name'], email)
-            self.listbox_searchresults.Append(person, ticket['id'])
+                ticket_email = ticket['assigned_email']
+            ticket_number = "%i%05i%04i" % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
+            ticket_name = "%s, %s" % (ticket['waiver_last_name'], ticket['waiver_first_name'])
+            self.listctrl_searchresults.InsertItem(t, ticket_number)
+            self.listctrl_searchresults.SetItem(t, 1, ticket_name)
+            self.listctrl_searchresults.SetItem(t, 2, ticket_email)
             t += 1
         
         if t == 0:
-            self.listbox_searchresults.Append('No Results!', 0)
+            self.set_status(STATUS_ERROR, 'Search returned 0 results!')
+            return False
+        
+        return True
 
     def set_stats(self):
         tickets_sold = 0
@@ -385,13 +359,7 @@ class MainWindow(wx.Frame):
         self.statictext_soldvalue.SetLabel(str(tickets_sold))
         self.statictext_usedvalue.SetLabel(str(tickets_used))
 
-    def check_code(self):
-        code = self.textctrl_code.GetValue()
-
-        if not re.match('[0-9]{10}', code):
-            self.textctrl_code.Clear()
-            return False
-
+    def check_code(self, code):
         check_tier_code = code[0]
         check_ticket_number = code[1:6]
         check_ticket_code = code[6:10]
@@ -408,9 +376,7 @@ class MainWindow(wx.Frame):
         cursor.close()
 
         if ticket is None:
-            self.textctrl_result.SetValue('Ticket Not Found!')
-            self.textctrl_result.SetBackgroundColour(wx.RED)
-            self.play_sound_reject()
+            self.set_status(STATUS_REJECT, 'Ticket not found!')
             self.reset_all()
             return False
         
@@ -441,9 +407,7 @@ class MainWindow(wx.Frame):
         if int(ticket['wristband_count']) > 0:
             confirm_dialog = wx.MessageDialog(self, 'Ticket already used! Are you replacing a wristband?','Warning!', wx.YES_NO|wx.NO_DEFAULT|wx.ICON_EXCLAMATION|wx.STAY_ON_TOP)
             if confirm_dialog.ShowModal() == wx.ID_NO:
-                self.textctrl_result.SetValue('Ticket already used!')
-                self.textctrl_result.SetBackgroundColour(wx.RED)
-                self.play_sound_reject()
+                self.set_status(STATUS_REJECT, 'Ticket already used!')
                 self.reset_all()
                 return False
 
@@ -485,18 +449,52 @@ class MainWindow(wx.Frame):
         checkin_cursor.close()
         self.ticket_db.commit()
 
-        self.textctrl_result.SetValue('Ticket accepted!')
-        self.textctrl_result.SetBackgroundColour(wx.GREEN)
-        self.play_sound_accept()
+        self.set_status(STATUS_ACCEPT, 'Ticket accepted!')
         self.reset_all() 
         return True
 
+    def set_status(self, type, message):
+        self.textctrl_result.SetValue(message)
+
+        if type == STATUS_ACCEPT:
+            self.textctrl_result.SetBackgroundColour(wx.GREEN)
+            self.play_sound_accept()
+        elif type == STATUS_REJECT:
+            self.textctrl_result.SetBackgroundColour(wx.RED)
+            self.play_sound_reject()
+        elif type == STATUS_ERROR:
+            self.textctrl_result.SetBackgroundColour(wx.YELLOW)
+            self.play_sound_error()
+        else:
+            self.textctrl_result.SetBackgroundColour(wx.WHITE)
+        
+        return True
+
+    def reset_searchresults(self):
+        self.listctrl_searchresults.ClearAll()
+        self.listctrl_searchresults.AppendColumn("Ticket", width=150)
+        self.listctrl_searchresults.AppendColumn("Name", width=250)
+        self.listctrl_searchresults.AppendColumn("Email", width=250)
+        return True
+
     def reset_all(self):
-        self.textctrl_searchfilter.Clear()
+        self.reset_searchresults()
         self.textctrl_code.Clear()
-        self.listbox_searchresults.Clear()
         self.set_stats()
         self.textctrl_code.SetFocus()
+        return True
+        
+    def update(self, e):
+        if self.textctrl_result.GetValue() != DEFAULT_STATUS:
+            if self.status_check < 3:
+                self.status_check += 1
+            else:
+                self.set_status(STATUS_NONE, DEFAULT_STATUS)
+                self.status_check = 0
+        
+        if self.textctrl_code.GetValue() == '':
+            self.textctrl_code.SetFocus()
+        return True
         
 
 argparser = argparse.ArgumentParser(description="BurnScan Ticket Station")
