@@ -20,14 +20,18 @@
 
 import sys
 import time
-import random
-import hashlib
 import argparse
 import re
 import sqlite3
+import json
 import wx
 import wx.adv
 import pygame
+import pycurl
+import certifi
+import nacl.utils
+import base64
+import os.path
 
 # configparser changed its name in python 3
 try:
@@ -36,20 +40,26 @@ except ImportError:
     import configparser
 
 from datetime import datetime
-from datetime import timedelta
 from xml.dom.minidom import Node
+from nacl.public import Box, PrivateKey, PublicKey
+from StringIO import StringIO
+from urllib import urlencode
 
 CFG_PATH = 'BurnScan.cfg'
 
 CFG_SECTION_GENERAL = 'General'
-CFG_DATABASE_PATH = 'database_path'
 CFG_SOUND_ACCEPT = 'sound_accept'
 CFG_SOUND_REJECT = 'sound_reject'
 CFG_SOUND_ERROR = 'sound_error'
 
 CFG_SECTION_SECURITY = 'Security'
-CFG_PASSWORD_RAW = 'password_raw'
-CFG_PASSWORD_ENC = 'password_enc'
+CFG_CLIENT_IDENT = 'client_ident'
+CFG_CLIENT_PRIVATE_KEY = 'client_private_key'
+CFG_SERVER_PUBLIC_KEY = 'server_public_key'
+
+CFG_SECTION_DATA = 'Data'
+CFG_DATABASE_PATH = 'database_path'
+CFG_API_PATH = 'api_path'
 
 STATUS_NONE = 0
 STATUS_ACCEPT = 1
@@ -67,26 +77,44 @@ class MainWindow(wx.Frame):
         self.args = argparser.parse_args()
         self.load_config()
 
-        if self.args.cryptconfig:
-            self.crypt_config()
-
         try:
-            self.ticket_db = sqlite3.connect(self.config.get(CFG_SECTION_GENERAL, CFG_DATABASE_PATH))
+            self.ticket_db = sqlite3.connect(self.config.get(CFG_SECTION_DATA, CFG_DATABASE_PATH))
         except Exception as err:
             print("Error loading database: {0}".format(err))
             sys.exit()
 
         self.ticket_db.row_factory = sqlite3.Row
 
+        # handle arguments
+        if self.args.flush_tickets:
+            self.flush_tickets()
+        if self.args.flush_wristbands:
+            self.flush_wristbands()
+        if self.args.flush_all:
+            self.flush_all()
+
+        # configure encryption keys
+        self.client_ident = self.config.get(CFG_SECTION_SECURITY, CFG_CLIENT_IDENT)
+        self.client_private_key = PrivateKey(self.config.get(CFG_SECTION_SECURITY, CFG_CLIENT_PRIVATE_KEY), encoder=nacl.encoding.Base64Encoder)
+        self.server_public_key = PublicKey(self.config.get(CFG_SECTION_SECURITY, CFG_SERVER_PUBLIC_KEY), encoder=nacl.encoding.Base64Encoder)
+
         # configure sounds
         self.sound_accept = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ACCEPT)
         self.sound_reject = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_REJECT)
         self.sound_error = self.config.get(CFG_SECTION_GENERAL, CFG_SOUND_ERROR)
 
-        # set timer
-        self.timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.update, self.timer)
-        self.timer.Start(1000)
+        # configure api path
+        self.api_path = self.config.get(CFG_SECTION_DATA, CFG_API_PATH)
+
+        # set api timer
+        self.api_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.update_api, self.api_timer)
+        self.api_timer.Start(1000 * 60 * 5)
+
+        # set field timer
+        self.field_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.update_field, self.field_timer)
+        self.field_timer.Start(1000)
         self.status_check = 0
 
         # create fonts
@@ -125,7 +153,7 @@ class MainWindow(wx.Frame):
         self.button_del = wx.Button(self, wx.ID_ANY, "&del")
 
         # set a statusbar
-        self.CreateStatusBar()
+        self.CreateStatusBar(style=0)
 
         # create sizers and place elements
         self.sizer_code = wx.BoxSizer(wx.HORIZONTAL)
@@ -203,7 +231,7 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_listctrl_searchresults_activated, self.listctrl_searchresults)
 
         self.Show(True)
-        #self.ShowFullScreen(True, style=wx.FULLSCREEN_ALL)
+        # self.ShowFullScreen(True, style=wx.FULLSCREEN_ALL)
         self.reset_all()
 
     def load_config(self):
@@ -222,44 +250,6 @@ class MainWindow(wx.Frame):
         pygame.mixer.Sound(self.sound_error).play()
         return True
 
-    def crypt_config(self):
-        if self.config.has_option(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW):
-            password_raw = self.config.get(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW)
-            password_enc = hashlib.sha256(password_raw.encode()).hexdigest()
-            self.config.set(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC, password_enc)
-            self.config.remove_option(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW)
-            configfile = open(CFG_PATH, 'wb')
-            self.config.write(configfile)
-            print("Password encrypted!")
-            return True
-        else:
-            if self.config.has_option(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC):
-                print("Password already encrypted!")
-                return False
-            else:
-                print("No password to encrypt!")
-                return False
-
-    def authenticate(self):
-        authorized = False
-        dialog = wx.PasswordEntryDialog(self, 'Password:', 'authenticate yourself')
-        if dialog.ShowModal() == wx.ID_OK:
-            answer = str(dialog.GetValue())
-            if self.config.has_option(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC):
-                password = self.config.get(CFG_SECTION_SECURITY, CFG_PASSWORD_ENC)
-                answer_hash = hashlib.sha256(answer.encode()).hexdigest()
-                if answer_hash == password:
-                    authorized = True
-            else:
-                password = self.config.get(CFG_SECTION_SECURITY, CFG_PASSWORD_RAW)
-                if answer == password:
-                   authorized = True
-        if not authorized:
-            dialog = wx.MessageDialog(self, 'Invalid Password', 'Authentication Failed')
-            dialog.ShowModal()
-        dialog.Destroy()
-        return authorized
-
     def on_button_num(self, e, num):
         self.textctrl_code.AppendText(str(num))
         self.textctrl_code.SetFocus()
@@ -276,9 +266,39 @@ class MainWindow(wx.Frame):
         query = e.GetLabel()
         return self.check_entry(query)
 
+    def flush_tickets(self):
+        cursor = self.ticket_db.cursor()
+        sql_flush = '''DELETE FROM `tickets`'''
+        cursor.execute(sql_flush)
+        cursor.close()
+        self.ticket_db.commit()
+        return True
+
+    def flush_wristbands(self):
+        cursor = self.ticket_db.cursor()
+        sql_flush = '''DELETE FROM `checkins`'''
+        cursor.execute(sql_flush)
+        sql_counter = '''UPDATE `sqlite_sequence` SET `seq` = 0 WHERE `name` = 'checkins' LIMIT 1'''
+        cursor.execute(sql_counter)
+        cursor.close()
+        self.ticket_db.commit()
+        return True
+
+    def flush_all(self):
+        self.flush_wristbands()
+        self.flush_tickets()
+        return True
+
     def check_entry(self, query):
         if re.match('[0-9]{10}', query):
             return self.check_code(query)
+        elif query == 'REFRESH':
+            self.set_status(STATUS_NONE, 'Forcing database update...')
+            if self.update_api(1):
+                self.set_status(STATUS_ACCEPT, 'Database up to date!')
+            else:
+                self.set_status(STATUS_ERROR, 'Database update failed!')
+            self.reset_all()
         else:
             return self.search_tickets(query)
 
@@ -290,8 +310,8 @@ class MainWindow(wx.Frame):
             return -1
 
         cursor = self.ticket_db.cursor()
-        sql_wristband_search = '''SELECT COUNT(*) FROM `checkins` WHERE `wristband` = '{0}' LIMIT 1'''
-        cursor.execute(sql_wristband_search.format(wristband_id))
+        sql_wristband_search = '''SELECT COUNT(*) FROM `checkins` WHERE `wristband` = ? LIMIT 1'''
+        cursor.execute(sql_wristband_search, (wristband_id,))
         wristband_count = cursor.fetchone()
         cursor.close()
 
@@ -310,15 +330,59 @@ class MainWindow(wx.Frame):
         if not re.match('[0-9a-zA-Z@\.\-]+', searchfilter):
             return False
 
+        query_string = '%%%s%%' % searchfilter
         cursor = self.ticket_db.cursor()
-        sql_search = '''SELECT * FROM `tickets`
-            WHERE `purchase_email` LIKE '%%{0}%%'
-            OR `purchase_name` LIKE '%%{0}%%'
-            OR `assigned_email` LIKE '%%{0}%%'
-            OR `waiver_first_name` LIKE '%%{0}%%'
-            OR `waiver_last_name` LIKE '%%{0}%%'
-            ORDER BY waiver_last_name, waiver_first_name'''
-        cursor.execute(sql_search.format(searchfilter))
+        sql_search = '''SELECT *
+            FROM `tickets` AS `tix1`
+            WHERE
+                (
+                    `tix1`.`purchase_email` LIKE ?
+                    OR `tix1`.`purchase_name` LIKE ?
+                    OR `tix1`.`assigned_email` LIKE ?
+                    OR `tix1`.`waiver_name` LIKE ?
+                )
+                AND ((
+                    `tix1`.`id` = (
+                        SELECT MAX(`tix2`.`id`)
+                        FROM `tickets` as `tix2`
+                        WHERE
+                            `tix2`.`ticket_number` = `tix1`.`ticket_number`
+                            AND `tix2`.`ticket_code` = `tix1`.`ticket_code`
+                            AND `tix2`.`tier_code` = `tix1`.`tier_code`
+                    )
+                    AND (
+                        (
+                            SELECT `chex1`.`ticket_id`
+                            FROM `checkins` AS `chex1`
+                            WHERE
+                                `chex1`.`ticket_number` = `tix1`.`ticket_number`
+                                AND `chex1`.`ticket_code` = `tix1`.`ticket_code`
+                                AND `chex1`.`tier_code` = `tix1`.`tier_code`
+                            LIMIT 1
+                        ) = `tix1`.`id`
+                        OR (
+                            SELECT COUNT(*)
+                            FROM `checkins` AS `chex2`
+                            WHERE
+                                `chex2`.`ticket_number` = `tix1`.`ticket_number`
+                                AND `chex2`.`ticket_code` = `tix1`.`ticket_code`
+                                AND `chex2`.`tier_code` = `tix1`.`tier_code`
+                        ) = 0
+                    )
+                )
+                OR (
+                    (
+                        SELECT `chex3`.`ticket_id`
+                        FROM `checkins` as `chex3`
+                        WHERE
+                            `chex3`.`ticket_number` = `tix1`.`ticket_number`
+                            AND `chex3`.`ticket_code` = `tix1`.`ticket_code`
+                            AND `chex3`.`tier_code` = `tix1`.`tier_code`
+                        LIMIT 1
+                    ) = `tix1`.`id`
+                ))
+            ORDER BY waiver_name'''
+        cursor.execute(sql_search, (query_string, query_string, query_string, query_string))
         search_results = cursor.fetchall()
         cursor.close()
  
@@ -329,7 +393,7 @@ class MainWindow(wx.Frame):
             else:
                 ticket_email = ticket['assigned_email']
             ticket_number = "%i%05i%04i" % (ticket['tier_code'], ticket['ticket_number'], ticket['ticket_code'])
-            ticket_name = "%s, %s" % (ticket['waiver_last_name'], ticket['waiver_first_name'])
+            ticket_name = ticket['waiver_name']
             self.listctrl_searchresults.InsertItem(t, ticket_number)
             self.listctrl_searchresults.SetItem(t, 1, ticket_name)
             self.listctrl_searchresults.SetItem(t, 2, ticket_email)
@@ -346,7 +410,7 @@ class MainWindow(wx.Frame):
         tickets_used = 0
 
         cursor = self.ticket_db.cursor()
-        sql_sold = '''SELECT COUNT(*) FROM `tickets`'''
+        sql_sold = '''SELECT COUNT(*) FROM (SELECT DISTINCT `ticket_number`, `ticket_code`, `tier_code` FROM `tickets`)'''
         sql_used = '''SELECT COUNT(DISTINCT `ticket_id`) FROM `checkins`'''
         cursor.execute(sql_sold)
         res_sold = cursor.fetchone()
@@ -359,6 +423,8 @@ class MainWindow(wx.Frame):
         self.statictext_soldvalue.SetLabel(str(tickets_sold))
         self.statictext_usedvalue.SetLabel(str(tickets_used))
 
+        return True
+
     def check_code(self, code):
         check_tier_code = code[0]
         check_ticket_number = code[1:6]
@@ -366,12 +432,55 @@ class MainWindow(wx.Frame):
         
         cursor = self.ticket_db.cursor()
         sql_ticket = '''SELECT *
-            FROM `tickets`
-            WHERE `tier_code` = '{0}'
-            AND `ticket_number` = '{1}'
-            AND `ticket_code` = '{2}'
+            FROM `tickets` AS `tix1`
+            WHERE
+            (
+                `tix1`.`tier_code` = ?
+                AND `tix1`.`ticket_number` = ?
+                AND `tix1`.`ticket_code` = ?
+            )
+            AND ((
+                    `tix1`.`id` = (
+                        SELECT MAX(`tix2`.`id`)
+                        FROM `tickets` as `tix2`
+                        WHERE
+                            `tix2`.`ticket_number` = `tix1`.`ticket_number`
+                            AND `tix2`.`ticket_code` = `tix1`.`ticket_code`
+                            AND `tix2`.`tier_code` = `tix1`.`tier_code`
+                    )
+                    AND (
+                        (
+                            SELECT `chex1`.`ticket_id`
+                            FROM `checkins` AS `chex1`
+                            WHERE
+                                `chex1`.`ticket_number` = `tix1`.`ticket_number`
+                                AND `chex1`.`ticket_code` = `tix1`.`ticket_code`
+                                AND `chex1`.`tier_code` = `tix1`.`tier_code`
+                            LIMIT 1
+                        ) = `tix1`.`id`
+                        OR (
+                            SELECT COUNT(*)
+                            FROM `checkins` AS `chex2`
+                            WHERE
+                                `chex2`.`ticket_number` = `tix1`.`ticket_number`
+                                AND `chex2`.`ticket_code` = `tix1`.`ticket_code`
+                                AND `chex2`.`tier_code` = `tix1`.`tier_code`
+                        ) = 0
+                    )
+                )
+                OR (
+                    (
+                        SELECT `chex3`.`ticket_id`
+                        FROM `checkins` as `chex3`
+                        WHERE
+                            `chex3`.`ticket_number` = `tix1`.`ticket_number`
+                            AND `chex3`.`ticket_code` = `tix1`.`ticket_code`
+                            AND `chex3`.`tier_code` = `tix1`.`tier_code`
+                        LIMIT 1
+                    ) = `tix1`.`id`
+                ))
             LIMIT 1'''
-        cursor.execute(sql_ticket.format(check_tier_code, check_ticket_number, check_ticket_code))
+        cursor.execute(sql_ticket, (check_tier_code, check_ticket_number, check_ticket_code))
         ticket = cursor.fetchone()
         cursor.close()
 
@@ -398,9 +507,9 @@ class MainWindow(wx.Frame):
                 LIMIT 1
             ) AS `wristband_current`
             FROM `tickets`
-            WHERE `id` = '{0}'
+            WHERE `id` = ?
             LIMIT 1'''
-        ticket_cursor.execute(sql_ticket.format(ticket_id))
+        ticket_cursor.execute(sql_ticket, (ticket_id,))
         ticket = ticket_cursor.fetchone()
         ticket_cursor.close()
 
@@ -421,12 +530,14 @@ class MainWindow(wx.Frame):
         	message += 'Current Wristband: %s\n' % (ticket['wristband_current'])
         message += 'Wristbands Used: %s\n\n' % (ticket['wristband_count'])
         message += '#### CHECK ID WITH INFORMATION BELOW ####\n\n'
-        message += 'Name: %s, %s\n' % (ticket['waiver_last_name'], ticket['waiver_first_name'])
+        message += 'Name: %s\n' % (ticket['waiver_name'])
         message += 'State: %s\n' % (ticket['waiver_state'])
         message += 'Email: %s\n\n' % (email)
         message += '#### CHECK ID WITH INFORMATION ABOVE ####\n\n'
         message += 'Purchaser Name: %s\n' % (ticket['purchase_name'])
-        message += 'Purchaser Email: %s' % (ticket['purchase_email'])
+        message += 'Purchaser Email: %s\n\n' % (ticket['purchase_email'])
+        message += '#### EMERGENCY CONTACT ####\n\n'
+        message += ticket['waiver_emergency']
 
         confirm_dialog = wx.MessageDialog(self, message,'Confirm Selection', wx.OK|wx.CANCEL|wx.CANCEL_DEFAULT|wx.ICON_QUESTION|wx.STAY_ON_TOP)
 
@@ -443,9 +554,13 @@ class MainWindow(wx.Frame):
             return False
 
         checkin_cursor = self.ticket_db.cursor()
-        sql_checkin = '''INSERT INTO `checkins`(`ticket_id`,`date`,`wristband`) VALUES ('{0}', '{1}', '{2}')'''
+        sql_checkin = '''INSERT INTO `checkins`
+            (`ticket_id`,`date`,`wristband`,`ticket_number`, `ticket_code`, `tier_code`)
+            VALUES (?, ?, ?, ?, ?, ?)'''
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        checkin_cursor.execute(sql_checkin.format(ticket_id, date, wristband_id))
+        checkin_cursor.execute(sql_checkin, (
+            ticket_id, date, wristband_id, ticket['ticket_number'],
+            ticket['ticket_code'], ticket['tier_code']))
         checkin_cursor.close()
         self.ticket_db.commit()
 
@@ -482,9 +597,10 @@ class MainWindow(wx.Frame):
         self.textctrl_code.Clear()
         self.set_stats()
         self.textctrl_code.SetFocus()
+        self.SetStatusText('')
         return True
         
-    def update(self, e):
+    def update_field(self, e):
         if self.textctrl_result.GetValue() != DEFAULT_STATUS:
             if self.status_check < 3:
                 self.status_check += 1
@@ -495,10 +611,70 @@ class MainWindow(wx.Frame):
         if self.textctrl_code.GetValue() == '':
             self.textctrl_code.SetFocus()
         return True
+
+    def query_server(self, request):
+        json_request = json.dumps(request)
+        box_server = Box(self.client_private_key, self.server_public_key)
+        bin_request = box_server.encrypt(json_request)
+        io_buffer = StringIO()
+        curl_query = pycurl.Curl()
+        curl_query.setopt(curl_query.URL, self.api_path)
+        b64_request = base64.b64encode(bin_request)
+        post_data = {'i': self.client_ident, 'r': b64_request}
+        post_fields = urlencode(post_data)
+        curl_query.setopt(curl_query.POSTFIELDS, post_fields)
+        curl_query.setopt(curl_query.WRITEDATA, io_buffer)
+        curl_query.setopt(curl_query.CAINFO, certifi.where())
+        try:
+            curl_query.perform()
+            curl_query.close()
+        except pycurl.error:
+            return False;
+        bin_response = base64.b64decode(io_buffer.getvalue())
+        json_response = box_server.decrypt(bin_response)
+        obj_response = json.loads(json_response)
+        return obj_response
         
 
-argparser = argparse.ArgumentParser(description="BurnScan Ticket Station")
-argparser.add_argument("--cryptconfig", action='store_true', help="Encrypt the admin password (if it isn't already encrypted).")
+    def update_api(self, e):
+        last_cursor = self.ticket_db.cursor()
+        sql_last = '''SELECT `id` FROM `tickets` ORDER BY `id` DESC LIMIT 1'''
+        last_cursor.execute(sql_last)
+        last_ticket = last_cursor.fetchone()
+        last_cursor.close()
+        if last_ticket is None:
+            ticket_id = 0
+        else:
+            ticket_id = last_ticket['id']
+        arr_request = {'command': 'update', 'id': ticket_id}
+        api_response = self.query_server(arr_request)
+        if api_response == False:
+            return False
+        if len(api_response) < 1:
+            return True
+        insert_template = '''INSERT INTO `tickets`
+            (`id`, `import_id`, `ticket_number`, `ticket_code`,`tier_id`,
+            `tier_code`, `tier_label`, `purchase_date`, `purchase_email`,
+            `purchase_name`, `assigned_email`, `waiver_name`, `waiver_state`,
+            `waiver_emergency`)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+        update_cursor = self.ticket_db.cursor()
+        for ticket in api_response:
+            update_cursor.execute(insert_template,
+                (ticket['id'], ticket['import_id'], ticket['ticket_number'],
+                ticket['ticket_code'], ticket['tier_id'], ticket['tier_code'],
+                ticket['tier_label'], ticket['purchase_date'], ticket['purchase_email'],
+                ticket['purchase_name'], ticket['assigned_email'], ticket['waiver_name'],
+                ticket['waiver_state'], ticket['waiver_emergency']))
+        update_cursor.close()
+        self.ticket_db.commit()
+        self.set_stats()
+        return True
+
+argparser = argparse.ArgumentParser(description='BurnScan Ticket Station')
+argparser.add_argument('--flush-tickets', action='store_true', help='Flush the ticket table.')
+argparser.add_argument('--flush-wristbands', action='store_true', help='Flush the wristband table.')
+argparser.add_argument('--flush-all', action='store_true', help='Flush the entire database.')
 
 pygame.init()
 app = wx.App()
