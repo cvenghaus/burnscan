@@ -292,6 +292,8 @@ class MainWindow(wx.Frame):
     def check_entry(self, query):
         if re.match('[0-9]{10}', query):
             return self.check_code(query)
+        elif re.match('[0-9]{1,5}', query):
+            return self.search_wristbands(query)
         elif query == 'REFRESH':
             self.set_status(STATUS_NONE, 'Forcing database update...')
             if self.update_api(1):
@@ -324,12 +326,6 @@ class MainWindow(wx.Frame):
         return wristband_id
 
     def search_tickets(self, searchfilter):
-        self.reset_searchresults()
-        self.textctrl_code.SetFocus()
-
-        if not re.match('[0-9a-zA-Z@\.\-]+', searchfilter):
-            return False
-
         query_string = '%%%s%%' % searchfilter
         cursor = self.ticket_db.cursor()
         sql_search = '''SELECT *
@@ -386,8 +382,35 @@ class MainWindow(wx.Frame):
         search_results = cursor.fetchall()
         cursor.close()
  
+        if self.display_tickets(search_results) == False:
+            self.set_status(STATUS_ERROR, 'Search returned 0 results!')
+            return False
+        
+        return True
+
+    def search_wristbands(self, searchfilter):
+        cursor = self.ticket_db.cursor()
+        sql_search = '''SELECT `tickets`.*
+            FROM `tickets`, `checkins`
+            WHERE
+                `checkins`.`ticket_id` = `tickets`.`id`
+                AND `checkins`.`wristband` = ?
+            LIMIT 1'''
+        cursor.execute(sql_search, (searchfilter,))
+        search_results = cursor.fetchall()
+        cursor.close()
+        
+        if self.display_tickets(search_results) == False:
+            self.set_status(STATUS_ERROR, 'Search returned 0 results!')
+            return False
+        
+        return True
+
+    def display_tickets(self, tickets):
+        self.reset_searchresults()
+        self.textctrl_code.SetFocus()
         t = 0
-        for ticket in search_results:
+        for ticket in tickets:
             if not ticket['assigned_email']:
                 ticket_email = ticket['purchase_email']
             else:
@@ -398,12 +421,7 @@ class MainWindow(wx.Frame):
             self.listctrl_searchresults.SetItem(t, 1, ticket_name)
             self.listctrl_searchresults.SetItem(t, 2, ticket_email)
             t += 1
-        
-        if t == 0:
-            self.set_status(STATUS_ERROR, 'Search returned 0 results!')
-            return False
-        
-        return True
+        return (t > 0)
 
     def set_stats(self):
         tickets_sold = 0
