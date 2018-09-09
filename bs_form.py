@@ -18,32 +18,37 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import sys
-import time
 import argparse
+import base64
+import json
+import os.path
 import re
 import sqlite3
-import json
-import wx
-import wx.adv
-import pygame
-import pycurl
+import sys
+import time
+
 import certifi
 import nacl.utils
-import base64
-import os.path
+import pycurl
+import pygame
+import wx
+import wx.adv
 
-# configparser changed its name in python 3
 try:
-    import ConfigParser as configparser
-except ImportError:
+    # Python 3
     import configparser
+    from urllib.parse import urlencode
+    from io import BytesIO
+except ImportError:
+    # Python 2
+    import ConfigParser as configparser
+    from urllib import urlencode
+    from StringIO import StringIO as BytesIO
 
 from datetime import datetime
 from xml.dom.minidom import Node
+
 from nacl.public import Box, PrivateKey, PublicKey
-from StringIO import StringIO
-from urllib import urlencode
 
 CFG_PATH = 'BurnScan.cfg'
 
@@ -633,8 +638,8 @@ class MainWindow(wx.Frame):
     def query_server(self, request):
         json_request = json.dumps(request)
         box_server = Box(self.client_private_key, self.server_public_key)
-        bin_request = box_server.encrypt(json_request)
-        io_buffer = StringIO()
+        bin_request = box_server.encrypt(json_request.encode('utf-8'))
+        io_buffer = BytesIO()
         curl_query = pycurl.Curl()
         curl_query.setopt(curl_query.URL, self.api_path)
         b64_request = base64.b64encode(bin_request)
@@ -648,8 +653,9 @@ class MainWindow(wx.Frame):
             curl_query.close()
         except pycurl.error:
             return False;
-        bin_response = base64.b64decode(io_buffer.getvalue())
-        json_response = box_server.decrypt(bin_response)
+        cip_response = base64.b64decode(io_buffer.getvalue())
+        bin_response = box_server.decrypt(cip_response)
+        json_response = bin_response.decode('utf-8')
         obj_response = json.loads(json_response)
         return obj_response
         
